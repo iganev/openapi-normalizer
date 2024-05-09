@@ -2,8 +2,11 @@ use anyhow::anyhow;
 use anyhow::Result;
 use clap::Parser;
 use openapiv3::OpenAPI;
+use openapiv3::ReferenceOr;
 use openapiv3::Schema;
+use openapiv3::StatusCode;
 use serde_json;
+use std::collections::HashMap;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -32,20 +35,212 @@ async fn main() -> Result<()> {
     let openapi: OpenAPI = serde_json::from_str(&data).expect("Could not deserialize input");
     // println!("{:?}", openapi);
 
+    let mut complex_component_params = HashMap::new();
+    let mut simple_component_params = HashMap::new();
+    let mut referenced_component_params: Vec<String> = Vec::new();
+    let mut redundant_simple_component_params: Vec<String> = Vec::new();
+
+    let mut complex_component_schemas = HashMap::new();
+    let mut simple_component_schemas = HashMap::new();
+    let mut referenced_component_schemas: Vec<String> = Vec::new();
+    let mut redundant_simple_component_schemas: Vec<String> = Vec::new();
+
     if let Some(components) = openapi.components.as_ref() {
         for (name, schema) in components.schemas.iter() {
             if let Some(schema) = schema.as_item() {
-                let is_complex = is_complex(schema);
-
-                if !is_complex {
-                    println!("Key {} => {:?}", name, schema.schema_kind);
-                    println!();
+                if is_complex(schema) {
+                    complex_component_schemas.insert(name.clone(), schema.clone());
+                } else {
+                    simple_component_schemas.insert(name.clone(), schema.clone());
                 }
+            } else if let ReferenceOr::Reference { reference } = schema {
+                // reference
+                println!(
+                    "Thats weird. Found schema reference {} => {}",
+                    name, reference
+                );
+            }
+        }
+
+        for (name, param) in components.parameters.iter() {
+            if let Some(param) = param.as_item() {
+                match &param.parameter_data_ref().format {
+                    openapiv3::ParameterSchemaOrContent::Schema(schema) => {
+                        if let Some(schema) = schema.as_item() {
+                            if is_complex(schema) {
+                                complex_component_params.insert(name.clone(), schema.clone());
+                            } else {
+                                simple_component_params.insert(name.clone(), schema.clone());
+                            }
+                        } else if let ReferenceOr::Reference { reference } = schema {
+                            println!("Found param reference {} => {}", name, reference);
+                        }
+                    }
+                    openapiv3::ParameterSchemaOrContent::Content(content) => {
+                        //not entirely sure yet what that is
+                        for (content_key, content_media) in content.iter() {
+                            if let Some(schema) = &content_media.schema {
+                                println!(
+                                    "Look ma I found something {} => {:?}",
+                                    content_key, schema
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if let ReferenceOr::Reference { reference } = param {
+                // reference
+                println!(
+                    "Thats weird. Found param reference {} => {}",
+                    name, reference
+                );
+            }
+        }
+    }
+
+    println!();
+    println!();
+    println!();
+
+    for (name, path) in openapi.paths.iter() {
+        println!("Scanning path {}", name);
+        if let Some(path) = path.as_item() {
+            for (_op_name, operation) in path.iter() {
+                for param in operation.parameters.iter() {
+                    match param {
+                        ReferenceOr::Reference { reference } => {
+                            let ref_data = parse_reference(reference);
+                            println!("Param reference name {} of type {}", ref_data.0, ref_data.1);
+                        }
+                        ReferenceOr::Item(param) => {
+                            match &param.parameter_data_ref().format {
+                                openapiv3::ParameterSchemaOrContent::Schema(schema) => {
+                                    match schema {
+                                        ReferenceOr::Reference { reference } => {
+                                            // count references to find reduntant component schemas
+
+                                            let ref_data = parse_reference(reference);
+                                            println!(
+                                                "Param {} reference name {} of type {}",
+                                                param.parameter_data_ref().name,
+                                                ref_data.0,
+                                                ref_data.1
+                                            );
+                                        }
+                                        ReferenceOr::Item(schema) => {
+                                            if is_complex(schema) {
+                                                // this should be a reference, ideally, but is an inline schema
+                                                println!(
+                                                    "Param schema is complex for {}",
+                                                    param.parameter_data_ref().name
+                                                );
+                                            } else {
+                                                // this is a simple type, not necessarily needs to be a schema, only if it repeats
+                                                println!(
+                                                    "Param schema is simple for {}",
+                                                    param.parameter_data_ref().name
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                openapiv3::ParameterSchemaOrContent::Content(content) => {
+                                    //not entirely sure yet what that is
+                                    for (_content_key, content_media) in content.iter() {
+                                        if let Some(schema) = &content_media.schema {
+                                            match schema {
+                                                ReferenceOr::Reference { reference } => {
+                                                    let ref_data = parse_reference(reference);
+                                                    println!(
+                                                        "Param reference name {} of type {}",
+                                                        ref_data.0, ref_data.1
+                                                    );
+                                                }
+                                                ReferenceOr::Item(schema) => {
+                                                    if is_complex(schema) {
+                                                        println!(
+                                                            "Param schema is complex for {}",
+                                                            param.parameter_data_ref().name
+                                                        );
+                                                    } else {
+                                                        println!(
+                                                            "Param schema is simple for {}",
+                                                            param.parameter_data_ref().name
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (resp_code, resp_obj) in operation.responses.responses.iter().chain(
+                    operation
+                        .responses
+                        .default
+                        .iter()
+                        .map(|def_resp| (&StatusCode::Code(200), def_resp)),
+                ) {
+                    match resp_obj {
+                        ReferenceOr::Reference { reference } => {
+                            // the whole response object is a reference
+                            let ref_data = parse_reference(reference);
+                            println!(
+                                "Response reference name {} of type {}",
+                                ref_data.0, ref_data.1
+                            );
+                        }
+                        ReferenceOr::Item(resp) => {
+                            // the response object is an inline schema
+                            for (_content_key, content_media) in resp.content.iter() {
+                                if let Some(schema) = &content_media.schema {
+                                    match schema {
+                                        ReferenceOr::Reference { reference } => {
+                                            let ref_data = parse_reference(reference);
+                                            println!(
+                                                "Response reference name {} of type {}",
+                                                ref_data.0, ref_data.1
+                                            );
+                                        }
+                                        ReferenceOr::Item(schema) => {
+                                            if is_complex(schema) {
+                                                println!(
+                                                    "Response schema is complex for {}",
+                                                    resp_code
+                                                );
+                                            } else {
+                                                println!(
+                                                    "Response schema is simple for {}",
+                                                    resp_code
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                println!();
             }
         }
     }
 
     Ok(())
+}
+
+pub fn parse_reference(reference: &str) -> (&str, &str) {
+    let mut tokens = reference.split('/').rev();
+
+    (
+        tokens.next().unwrap_or_default(),
+        tokens.next().unwrap_or_default(),
+    )
 }
 
 pub fn is_complex(schema: &Schema) -> bool {
