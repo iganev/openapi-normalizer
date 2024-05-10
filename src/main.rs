@@ -49,6 +49,13 @@ async fn main() -> Result<()> {
     let mut referenced_component_schemas: Vec<String> = Vec::new();
     let mut redundant_simple_component_schemas: Vec<String> = Vec::new();
 
+    let mut complex_component_responses = HashMap::new();
+    let mut simple_component_responses = HashMap::new();
+    let mut referenced_component_responses: Vec<String> = Vec::new();
+    let mut redundant_simple_component_responses: Vec<String> = Vec::new();
+
+    println!("Collecting schema information");
+
     if let Some(components) = openapi.components.as_ref() {
         for (name, schema) in components.schemas.iter() {
             match schema {
@@ -78,42 +85,156 @@ async fn main() -> Result<()> {
                         name, reference
                     );
                 }
-                ReferenceOr::Item(param) => {
-                    match &param.parameter_data_ref().format {
-                        openapiv3::ParameterSchemaOrContent::Schema(schema) => {
-                            if let Some(schema) = schema.as_item() {
-                                if is_complex(schema) {
-                                    complex_component_params.insert(name.clone(), schema.clone());
-                                } else {
-                                    simple_component_params.insert(name.clone(), schema.clone());
-                                }
-                            } else if let ReferenceOr::Reference { reference } = schema {
-                                println!("Found param reference {} => {}", name, reference);
+                ReferenceOr::Item(param) => match &param.parameter_data_ref().format {
+                    openapiv3::ParameterSchemaOrContent::Schema(schema) => {
+                        if let Some(schema) = schema.as_item() {
+                            if is_complex(schema) {
+                                complex_component_params.insert(name.clone(), schema.clone());
+                            } else {
+                                simple_component_params.insert(name.clone(), schema.clone());
                             }
+                        } else if let ReferenceOr::Reference { reference } = schema {
+                            println!("Found param reference {} => {}", name, reference);
                         }
-                        openapiv3::ParameterSchemaOrContent::Content(content) => {
-                            //not entirely sure yet what that is
-                            for (_content_key, content_media) in content.iter() {
-                                if let Some(schema) = &content_media.schema {
-                                    match schema {
-                                        ReferenceOr::Reference { reference } => {
-                                            println!(
-                                                "Found param reference {} => {}",
-                                                name, reference
-                                            );
-                                        }
-                                        ReferenceOr::Item(schema) => {
-                                            if is_complex(schema) {
-                                                complex_component_params
-                                                    .insert(name.clone(), schema.clone());
-                                            } else {
-                                                simple_component_params
-                                                    .insert(name.clone(), schema.clone());
-                                            }
+                    }
+                    openapiv3::ParameterSchemaOrContent::Content(content) => {
+                        for (_content_key, content_media) in content.iter() {
+                            if let Some(schema) = &content_media.schema {
+                                match schema {
+                                    ReferenceOr::Reference { reference } => {
+                                        println!("Found param reference {} => {}", name, reference);
+                                    }
+                                    ReferenceOr::Item(schema) => {
+                                        if is_complex(schema) {
+                                            complex_component_params
+                                                .insert(name.clone(), schema.clone());
+                                        } else {
+                                            simple_component_params
+                                                .insert(name.clone(), schema.clone());
                                         }
                                     }
                                 }
                             }
+                        }
+                    }
+                },
+            }
+        }
+
+        for (name, response) in components.responses.iter() {
+            match response {
+                ReferenceOr::Reference { reference } => {
+                    println!(
+                        "Thats weird. Found response reference {} => {}",
+                        name, reference
+                    );
+                }
+                ReferenceOr::Item(response) => {
+                    for (header_name, header) in response.headers.iter() {
+                        match header {
+                            ReferenceOr::Reference { reference } => {
+                                println!(
+                                    "Thats weird. Found response header reference {} => {}",
+                                    name, reference
+                                );
+                            }
+                            ReferenceOr::Item(header) => match &header.format {
+                                openapiv3::ParameterSchemaOrContent::Schema(schema) => match schema
+                                {
+                                    ReferenceOr::Reference { reference } => {
+                                        println!(
+                                            "Thats weird. Found response header schema reference {} => {}",
+                                            name, reference
+                                        );
+                                    }
+                                    ReferenceOr::Item(schema) => {
+                                        if is_complex(schema) {
+                                            complex_component_responses.insert(
+                                                format!("{}/header/{}", name.clone(), header_name),
+                                                schema.clone(),
+                                            );
+                                        } else {
+                                            simple_component_responses.insert(
+                                                format!("{}/header/{}", name.clone(), header_name),
+                                                schema.clone(),
+                                            );
+                                        }
+                                    }
+                                },
+                                openapiv3::ParameterSchemaOrContent::Content(content) => {
+                                    for (_content_key, content_media) in content.iter() {
+                                        if let Some(schema) = &content_media.schema {
+                                            match schema {
+                                                ReferenceOr::Reference { reference } => {
+                                                    println!(
+                                                        "Thats weird. Found response header reference {} => {}",
+                                                        name, reference
+                                                    );
+                                                }
+                                                ReferenceOr::Item(schema) => {
+                                                    if is_complex(schema) {
+                                                        complex_component_responses.insert(
+                                                            format!(
+                                                                "{}/header/{}",
+                                                                name.clone(),
+                                                                header_name
+                                                            ),
+                                                            schema.clone(),
+                                                        );
+                                                    } else {
+                                                        simple_component_responses.insert(
+                                                            format!(
+                                                                "{}/header/{}",
+                                                                name.clone(),
+                                                                header_name
+                                                            ),
+                                                            schema.clone(),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                    }
+
+                    for (content_key, content_media) in response.content.iter() {
+                        if let Some(schema) = &content_media.schema {
+                            match schema {
+                                ReferenceOr::Reference { reference } => {
+                                    println!(
+                                        "Thats weird. Found response content reference {} => {:?}",
+                                        name, reference
+                                    );
+                                }
+                                ReferenceOr::Item(schema) => {
+                                    if is_complex(schema) {
+                                        complex_component_responses.insert(
+                                            format!("{}/content/{}", name.clone(), content_key),
+                                            schema.clone(),
+                                        );
+                                    } else {
+                                        simple_component_responses.insert(
+                                            format!("{}/content/{}", name.clone(), content_key),
+                                            schema.clone(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for (link_key, link) in response.links.iter() {
+                        match link {
+                            ReferenceOr::Reference { reference } => {
+                                println!(
+                                    "Thats weird. Found response link reference {} => {:?}",
+                                    name, reference
+                                );
+                            }
+                            ReferenceOr::Item(link) => {}
                         }
                     }
                 }
@@ -124,6 +245,8 @@ async fn main() -> Result<()> {
     println!();
     println!();
     println!();
+
+    println!("Parsing paths information");
 
     for (name, path) in openapi.paths.iter() {
         println!("Scanning path {}", name);
@@ -308,6 +431,8 @@ async fn main() -> Result<()> {
     println!();
     println!();
     println!();
+
+    println!("Report");
 
     for (param_name, _param_schema) in complex_component_params
         .iter()
