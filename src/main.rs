@@ -11,6 +11,10 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
+pub const COMPONENT_SCHEMA: &str = "schemas";
+pub const COMPONENT_PARAM: &str = "parameters";
+pub const COMPONENT_RESPONSE: &str = "responses";
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -47,53 +51,72 @@ async fn main() -> Result<()> {
 
     if let Some(components) = openapi.components.as_ref() {
         for (name, schema) in components.schemas.iter() {
-            if let Some(schema) = schema.as_item() {
-                if is_complex(schema) {
-                    complex_component_schemas.insert(name.clone(), schema.clone());
-                } else {
-                    simple_component_schemas.insert(name.clone(), schema.clone());
+            match schema {
+                ReferenceOr::Reference { reference } => {
+                    // reference
+                    println!(
+                        "Thats weird. Found schema reference {} => {}",
+                        name, reference
+                    );
                 }
-            } else if let ReferenceOr::Reference { reference } = schema {
-                // reference
-                println!(
-                    "Thats weird. Found schema reference {} => {}",
-                    name, reference
-                );
+                ReferenceOr::Item(schema) => {
+                    if is_complex(schema) {
+                        complex_component_schemas.insert(name.clone(), schema.clone());
+                    } else {
+                        simple_component_schemas.insert(name.clone(), schema.clone());
+                    }
+                }
             }
         }
 
         for (name, param) in components.parameters.iter() {
-            if let Some(param) = param.as_item() {
-                match &param.parameter_data_ref().format {
-                    openapiv3::ParameterSchemaOrContent::Schema(schema) => {
-                        if let Some(schema) = schema.as_item() {
-                            if is_complex(schema) {
-                                complex_component_params.insert(name.clone(), schema.clone());
-                            } else {
-                                simple_component_params.insert(name.clone(), schema.clone());
+            match param {
+                ReferenceOr::Reference { reference } => {
+                    // reference
+                    println!(
+                        "Thats weird. Found param reference {} => {}",
+                        name, reference
+                    );
+                }
+                ReferenceOr::Item(param) => {
+                    match &param.parameter_data_ref().format {
+                        openapiv3::ParameterSchemaOrContent::Schema(schema) => {
+                            if let Some(schema) = schema.as_item() {
+                                if is_complex(schema) {
+                                    complex_component_params.insert(name.clone(), schema.clone());
+                                } else {
+                                    simple_component_params.insert(name.clone(), schema.clone());
+                                }
+                            } else if let ReferenceOr::Reference { reference } = schema {
+                                println!("Found param reference {} => {}", name, reference);
                             }
-                        } else if let ReferenceOr::Reference { reference } = schema {
-                            println!("Found param reference {} => {}", name, reference);
                         }
-                    }
-                    openapiv3::ParameterSchemaOrContent::Content(content) => {
-                        //not entirely sure yet what that is
-                        for (content_key, content_media) in content.iter() {
-                            if let Some(schema) = &content_media.schema {
-                                println!(
-                                    "Look ma I found something {} => {:?}",
-                                    content_key, schema
-                                );
+                        openapiv3::ParameterSchemaOrContent::Content(content) => {
+                            //not entirely sure yet what that is
+                            for (_content_key, content_media) in content.iter() {
+                                if let Some(schema) = &content_media.schema {
+                                    match schema {
+                                        ReferenceOr::Reference { reference } => {
+                                            println!(
+                                                "Found param reference {} => {}",
+                                                name, reference
+                                            );
+                                        }
+                                        ReferenceOr::Item(schema) => {
+                                            if is_complex(schema) {
+                                                complex_component_params
+                                                    .insert(name.clone(), schema.clone());
+                                            } else {
+                                                simple_component_params
+                                                    .insert(name.clone(), schema.clone());
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            } else if let ReferenceOr::Reference { reference } = param {
-                // reference
-                println!(
-                    "Thats weird. Found param reference {} => {}",
-                    name, reference
-                );
             }
         }
     }
@@ -110,6 +133,15 @@ async fn main() -> Result<()> {
                     match param {
                         ReferenceOr::Reference { reference } => {
                             let ref_data = parse_reference(reference);
+
+                            if ref_data.1 == COMPONENT_PARAM {
+                                referenced_component_params.push(ref_data.0.to_string());
+                            } else if ref_data.1 == COMPONENT_SCHEMA {
+                                referenced_component_schemas.push(ref_data.0.to_string());
+                            } else {
+                                // unhandled component type
+                            }
+
                             println!("Param reference name {} of type {}", ref_data.0, ref_data.1);
                         }
                         ReferenceOr::Item(param) => {
@@ -120,6 +152,17 @@ async fn main() -> Result<()> {
                                             // count references to find reduntant component schemas
 
                                             let ref_data = parse_reference(reference);
+
+                                            if ref_data.1 == COMPONENT_PARAM {
+                                                referenced_component_params
+                                                    .push(ref_data.0.to_string());
+                                            } else if ref_data.1 == COMPONENT_SCHEMA {
+                                                referenced_component_schemas
+                                                    .push(ref_data.0.to_string());
+                                            } else {
+                                                // unhandled component type
+                                            }
+
                                             println!(
                                                 "Param {} reference name {} of type {}",
                                                 param.parameter_data_ref().name,
@@ -151,6 +194,17 @@ async fn main() -> Result<()> {
                                             match schema {
                                                 ReferenceOr::Reference { reference } => {
                                                     let ref_data = parse_reference(reference);
+
+                                                    if ref_data.1 == COMPONENT_PARAM {
+                                                        referenced_component_params
+                                                            .push(ref_data.0.to_string());
+                                                    } else if ref_data.1 == COMPONENT_SCHEMA {
+                                                        referenced_component_schemas
+                                                            .push(ref_data.0.to_string());
+                                                    } else {
+                                                        // unhandled component type
+                                                    }
+
                                                     println!(
                                                         "Param reference name {} of type {}",
                                                         ref_data.0, ref_data.1
@@ -189,6 +243,15 @@ async fn main() -> Result<()> {
                         ReferenceOr::Reference { reference } => {
                             // the whole response object is a reference
                             let ref_data = parse_reference(reference);
+
+                            if ref_data.1 == COMPONENT_PARAM {
+                                referenced_component_params.push(ref_data.0.to_string());
+                            } else if ref_data.1 == COMPONENT_SCHEMA {
+                                referenced_component_schemas.push(ref_data.0.to_string());
+                            } else {
+                                // unhandled component type
+                            }
+
                             println!(
                                 "Response reference name {} of type {}",
                                 ref_data.0, ref_data.1
@@ -201,6 +264,17 @@ async fn main() -> Result<()> {
                                     match schema {
                                         ReferenceOr::Reference { reference } => {
                                             let ref_data = parse_reference(reference);
+
+                                            if ref_data.1 == COMPONENT_PARAM {
+                                                referenced_component_params
+                                                    .push(ref_data.0.to_string());
+                                            } else if ref_data.1 == COMPONENT_SCHEMA {
+                                                referenced_component_schemas
+                                                    .push(ref_data.0.to_string());
+                                            } else {
+                                                // unhandled component type
+                                            }
+
                                             println!(
                                                 "Response reference name {} of type {}",
                                                 ref_data.0, ref_data.1
@@ -228,6 +302,28 @@ async fn main() -> Result<()> {
 
                 println!();
             }
+        }
+    }
+
+    println!();
+    println!();
+    println!();
+
+    for (param_name, _param_schema) in complex_component_params
+        .iter()
+        .chain(simple_component_params.iter())
+    {
+        if !referenced_component_params.contains(param_name) {
+            println!("Param {} is never used", param_name);
+        }
+    }
+
+    for (schema_name, _schema) in complex_component_schemas
+        .iter()
+        .chain(simple_component_schemas.iter())
+    {
+        if !referenced_component_schemas.contains(schema_name) {
+            println!("Schema {} is never used", schema_name);
         }
     }
 
