@@ -243,8 +243,6 @@ async fn main() -> Result<()> {
     }
 
     println!();
-    println!();
-    println!();
 
     println!("Parsing paths information");
 
@@ -428,8 +426,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!();
-    println!();
     println!();
 
     println!("Report");
