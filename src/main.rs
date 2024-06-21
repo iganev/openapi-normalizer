@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    for (link_key, link) in response.links.iter() {
+                    for (_link_key, link) in response.links.iter() {
                         match link {
                             ReferenceOr::Reference { reference } => {
                                 println!(
@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
                                     name, reference
                                 );
                             }
-                            ReferenceOr::Item(link) => {}
+                            ReferenceOr::Item(_link) => {}
                         }
                     }
                 }
